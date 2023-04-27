@@ -12,8 +12,14 @@ df = df.groupby(['State', 'ANSI', 'Affected by', 'Year', 'state_code'])[['Pct of
 df.reset_index(inplace=True)
 
 
-# App layout
+
+
 app = Dash(__name__)
+
+# Declare server for Heroku deployment. Needed for Procfile.
+server = app.server
+
+# App layout
 app.layout = html.Div(
     [
         # Website Title 
