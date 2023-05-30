@@ -14,32 +14,53 @@ conn = sqlite3.connect('traffic_data.db')
 
 def update(conn):
     """Updates incidents table by removing incidents with end times five hours before current time"""
-    cutoffTime = datetime.now() + timedelta(hours=5)
-    cursor = conn.cursor()
-    cmd=\
-    f"""
-    DELETE FROM incidents
-    WHERE endDatetime < '{cutoffTime.strftime('%Y-%m-%d %H:%M:%S')}'
-    """
-    cursor.execute(cmd)
+
+    try:
+        cutoffTime = datetime.now() + timedelta(hours=24)
+        cursor = conn.cursor()
+        cmd=\
+        f"""
+        DELETE FROM incidents
+        WHERE endDatetime < '{cutoffTime.strftime('%Y-%m-%d %H:%M:%S')}'
+        """
+        cursor.execute(cmd)
+    except:
+        print("Error, likely table does not exist")
 
 
 def insert_data(conn, data):
     """Inserts new traffic data into incidents table in database"""
-
-    if len(data) > 0:
-        data['endDatetime'] = data['endTime'].apply(lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%S"))
-        data.to_sql("intermediate", conn, if_exists="append", index=False)
+    
+    if len(data) <= 0:
+        return
+    cursor = conn.cursor()
+    data['endDatetime'] = data['endTime'].apply(lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%S"))
+    # checkcmd = "SHOW TABLES LIKE 'testtable'"
+    # cursor.execute(checkcmd)
+    # result = cursor.fetchone()
+    try:
+        data.to_sql("intermediate", conn, if_exists='replace', index=False)
+        
+        # incidents table is replaced here with a test table
+        cmd=\
+        """
+        DELETE FROM intermediate
+        WHERE id IN (SELECT id FROM incidents)
+        """
+        cursor.execute(cmd)
         cursor = conn.cursor()
         cmd=\
         """
         INSERT INTO incidents
-        SELECT * from intermediate
-        WHERE id NOT IN (SELECT id FROM intermediate)
+        SELECT * FROM intermediate
         """
         cursor.execute(cmd)
+        cursor = conn.cursor()
         cmd = "DROP TABLE intermediate"
         cursor.execute(cmd)
+    except:
+        print('except triggered')
+        data.to_sql("incidents", conn, if_exists="append", index=False)
 
 def get_traffic_data(bbox, key):
     """retrieves traffic incident data in a given bounding box from MapQuest Traffic API"""
