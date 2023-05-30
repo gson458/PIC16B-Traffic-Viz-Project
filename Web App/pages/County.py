@@ -1,17 +1,16 @@
-# Import Libraries
 import requests
-import json
 import sqlite3
 import time
-import folium
+import dash
 import pandas as pd
-import credentials as cred
 from plotly import express as px
-from dash import Dash, dcc, html, Input, Output  
+import dash
+from dash import dcc, html, Input, Output, callback 
+import dash_bootstrap_components as dbc
+import plotly.graph_objects as go
 
-# Non-Relevant-Data for now 
-# Need to be (queried) database in the future 
-conn = sqlite3.connect('traffic_data.db')
+dash.register_page(__name__)
+
 
 def insert_data(conn, data):
     """Inserts new traffic data into incidents table in database"""
@@ -99,55 +98,68 @@ def display_map_with_incidents(incidents, **kwargs):
     return fig
 
 
-app = Dash(__name__)
+def blank_figure():
+    fig = go.Figure(go.Scattermapbox())
 
-# Declare server for Heroku deployment. Needed for Procfile.
-server = app.server
+    fig.update_layout(
+        mapbox = dict(
+            style = "stamen-terrain",
+            center= go.layout.mapbox.Center(
+                lat=38,
+                lon=-120
+            ),
+            zoom = 3.6
+        ),
+        showlegend = False
+        )
+    
+    return fig
 
-
-app.layout = html.Div([
-
-    html.H1("Real Time Incidents By State", style={'text-align': 'center'}),
-
-    dcc.Input(
-        id="state",
-        type="text",
-        placeholder="State",
-    ),
-
-    html.Div(id='output_container', children=[]),
-    html.Br(),
-
-    dcc.Graph(id='my_map', figure={})
+layout =  dbc.Container([
+    html.H1("Real Time Incidents by County", className="border rounded-pill my-3 p-2 text-center"),
+    
+    dbc.Row([
+        dbc.Col(
+            dcc.Input(
+                id="county",
+                type="text",
+                placeholder="County",
+                className="mt-auto bg-light border",
+            ), width = "auto",
+        )
+        ],
+            justify="end"
+            ),
+    
+    html.Div(id='county_output_container', children=[],className="text-danger"),
+    
+    dbc.Row([
+        dbc.Col(dcc.Graph(id="my_county", className="border mt-3 shadow", figure = blank_figure())),
+    ],)
 ])
 
-
 # Connect the Plotly graphs with Dash Components
-@app.callback(
+@callback(
     [
-    Output(component_id='output_container', component_property='children'),
-    Output(component_id='my_map', component_property='figure')
+    Output(component_id='county_output_container', component_property='children'),
+    Output(component_id='my_county', component_property='figure')
     ],
     [
-    Input(component_id='state', component_property='value'),
+    Input(component_id='county', component_property='value'),
     ]
 )
-def update_graph(state):    
-    container = f"The input from the user was: {state}"
-    state_bounds = pd.read_csv("https://gist.githubusercontent.com/a8dx/2340f9527af64f8ef8439366de981168/raw/81d876daea10eab5c2675811c39bcd18a79a9212/US_State_Bounding_Boxes.csv")
-    state_bounds = state_bounds[['NAME', 'STUSPS', 'xmin', 'ymin', 'xmax', 'ymax']]
-    state_bounds = state_bounds.rename(columns={"xmin": "min_lng", "xmax": "max_lng", "ymin": "min_lat", "ymax": "max_lat"})
-    ma_minlat = state_bounds.loc[state_bounds['STUSPS']== state]['min_lat'].values[0]
-    ma_maxlat = state_bounds.loc[state_bounds['STUSPS']==state]['max_lat'].values[0]
-    ma_minlng = state_bounds.loc[state_bounds['STUSPS']==state]['min_lng'].values[0]
-    ma_maxlng = state_bounds.loc[state_bounds['STUSPS']==state]['max_lng'].values[0]
-    conn = sqlite3.connect('traffic_data.db')
-    key = "Sks7L0lksbFj0xPNyBdglVFjmsAJGJCU"
-    store_traffic_data(conn=conn, lat_start=ma_minlat, lat_end=ma_maxlat, lng_start=ma_minlng, lng_end=ma_maxlng)
-    bbox = (ma_minlat, ma_maxlat, ma_minlng, ma_maxlng)
+
+def update_graph(county):    
+    county_bounds = pd.read_csv("source/LA_counties.csv")
+    maxlat= county_bounds[county_bounds['County'] == county]['Max Latitude'].iloc[0]
+    minlat= county_bounds[county_bounds['County'] == county]['Min Latitude'].iloc[0]
+    minlng= county_bounds[county_bounds['County'] == county]['Min Longitude'].iloc[0]
+    maxlng= county_bounds[county_bounds['County'] == county]['Max Longitude'].iloc[0]
+    conn = sqlite3.connect('source/county_traffic_data.db')
+    store_traffic_data(conn=conn, lat_start=minlat, lat_end=maxlat, lng_start=minlng, lng_end=maxlng)
+    bbox = (minlat, maxlat, minlng, maxlng)
     incidents = get_incidents_in_area(conn, bbox)   
     fig = display_map_with_incidents(incidents, zoom=6)
-    return container, fig
-
-if __name__ == '__main__':
-    app.run_server(debug=True)
+    message = f"There are {len(incidents)} incidents in the area"
+    
+    return message, fig
