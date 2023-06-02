@@ -127,17 +127,27 @@ def insert_data(conn, data):
         print('except triggered')
         data.to_sql("incidents", conn, if_exists="append", index=False)
 
-def get_traffic_data(bbox, key):
+def get_traffic_data(bbox, mapquest_key, google_key):
     """retrieves traffic incident data in a given bounding box from MapQuest Traffic API"""
 
     # key = ""
-    response = requests.get(f"https://www.mapquestapi.com/traffic/v2/incidents?key={key}&boundingBox={bbox}&filters=congestion,incidents,construction,event")
+    response = requests.get(f"https://www.mapquestapi.com/traffic/v2/incidents?key={mapquest_key}&boundingBox={bbox}&filters=congestion,incidents,construction,event")
     data = pd.DataFrame(response.json()["incidents"])
     if len(data) > 0:
         data = data[['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime']]
+        addresses = []
+        for _, row in data.iterrows():
+            coord = str(row['lat']) +","+ str(row['lng'])
+            try:
+                response = requests.get(f"https://maps.googleapis.com/maps/api/geocode/json?latlng={coord}&key={google_key}")
+                addr = response.json()['results'][0]['formatted_address']
+            except:
+                addr = ""
+            addresses.append(addr)
+        data['address'] = addresses
     return data
 
-def store_traffic_data(conn, key, bbox):
+def store_traffic_data(conn, bbox, mapquest_key, google_key):
     """Iterates over a given area and updates traffic incident database by MapQuest API calls"""
 
     lat_start, lat_end, lng_start, lng_end = bbox
@@ -164,7 +174,7 @@ def store_traffic_data(conn, key, bbox):
     #bounding box exceeds the northernmost latitude of the bbox_range.
     while bbox["lat_start"] <= bbox_range["lat_end"]:
         #to fetch traffic incident data for the current bounding box
-        data = get_traffic_data(f"{bbox['lat_start']},{bbox['lng_start']},{bbox['lat_end']},{bbox['lng_end']}", key)
+        data = get_traffic_data(f"{bbox['lat_start']},{bbox['lng_start']},{bbox['lat_end']},{bbox['lng_end']}", mapquest_key, google_key)
         insert_data(conn, data)
         print(f"Page {page} processed.")
         page += 1
