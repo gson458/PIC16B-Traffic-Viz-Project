@@ -7,6 +7,7 @@ import ast
 import pandas as pd
 from plotly import express as px
 from datetime import datetime, timedelta
+import credentials as cred
 
 
 
@@ -127,10 +128,12 @@ def insert_data(conn, data):
         print('except triggered')
         data.to_sql("incidents", conn, if_exists="append", index=False)
 
-def get_traffic_data(bbox, mapquest_key, google_key):
+def get_traffic_data(bbox):
     """retrieves traffic incident data in a given bounding box from MapQuest Traffic API"""
 
     # key = ""
+    mapquest_key = cred.mapquest_api_key
+    google_key = cred.google_api_key
     response = requests.get(f"https://www.mapquestapi.com/traffic/v2/incidents?key={mapquest_key}&boundingBox={bbox}&filters=congestion,incidents,construction,event")
     data = pd.DataFrame(response.json()["incidents"])
     if len(data) > 0:
@@ -147,7 +150,7 @@ def get_traffic_data(bbox, mapquest_key, google_key):
         data['address'] = addresses
     return data
 
-def store_traffic_data(conn, bbox, mapquest_key, google_key):
+def store_traffic_data(conn, bbox):
     """Iterates over a given area and updates traffic incident database by MapQuest API calls"""
 
     lat_start, lat_end, lng_start, lng_end = bbox
@@ -174,7 +177,7 @@ def store_traffic_data(conn, bbox, mapquest_key, google_key):
     #bounding box exceeds the northernmost latitude of the bbox_range.
     while bbox["lat_start"] <= bbox_range["lat_end"]:
         #to fetch traffic incident data for the current bounding box
-        data = get_traffic_data(f"{bbox['lat_start']},{bbox['lng_start']},{bbox['lat_end']},{bbox['lng_end']}", mapquest_key, google_key)
+        data = get_traffic_data(f"{bbox['lat_start']},{bbox['lng_start']},{bbox['lat_end']},{bbox['lng_end']}")
         insert_data(conn, data)
         print(f"Page {page} processed.")
         page += 1
@@ -218,7 +221,7 @@ def get_county_incidents(conn, county):
 
     return get_incidents_in_area(conn, bbox)
 
-def update_county_incidents(conn, key, county):
+def update_county_incidents(conn, county):
     """Updates the database with current incidents in a given CA county"""
 
     cmd =\
@@ -231,7 +234,7 @@ def update_county_incidents(conn, key, county):
     cursor.execute(cmd)
     # min_lat, max_lat, min_lng, max_lng = cursor.fetchone()
     bbox = cursor.fetchone()
-    store_traffic_data(conn, key, bbox)
+    store_traffic_data(conn, bbox)
 
 def get_incidents_in_area(conn, bbox):
     """Retrieves incidents within the given bounding box from database"""
