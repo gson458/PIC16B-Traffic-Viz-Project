@@ -5,10 +5,17 @@ import time
 import ast
 # import folium
 import pandas as pd
+import asyncio
+import aiohttp
 from plotly import express as px
 from datetime import datetime, timedelta
 import credentials as cred
+import nest_asyncio
 
+
+# Allows async api calls when called from a jupyter notebook
+# See problems with existing async loops if error returns
+nest_asyncio.apply()
 
 
 #create our own database
@@ -128,26 +135,78 @@ def insert_data(conn, data):
         print('except triggered')
         data.to_sql("incidents", conn, if_exists="append", index=False)
 
+async def get_address(url, session):
+    """Async call that gets the reverse geocode info of a coordinate pair"""
+
+    try:
+        async with session.get(url=url) as response:
+            resp = await response.json()
+            # print(resp)
+            return resp['results'][0]
+    except Exception as e:
+        print("Unable to get response, error due to {}".format(e.__class__))
+
+async def get_batch_addresses(df, addresses):
+    """Async API calls that get reverse geocode info from a set of coordinates"""
+
+    async with aiohttp.ClientSession() as session:
+        tasks=[]
+        for _, row in df.iterrows():
+            coord = str(row['lat']) +","+ str(row['lng'])
+            url = f'https://maps.googleapis.com/maps/api/geocode/json?latlng={coord}&key={cred.google_api_key}'
+            tasks.append(asyncio.ensure_future(get_address(url, session)))
+        addys = await asyncio.gather(*tasks)
+        for addr in addys:
+            addresses.append(addr)
+
+def get_county(geocode):
+    """Extracts the county from geocoded info, if it exists"""
+
+    info = geocode['address_components']
+    # Administrative area level 2 is, by Google's definition, the county
+    county_dict = next((item for item in info if 'administrative_area_level_2' in item['types']), None)
+    try:
+        return county_dict['long_name']
+    except:
+        print("County N/A")
+        return ''
+
+def get_formatted_address(geocode):
+    """Extracts the formatted address from geocoded info, if it exists"""
+
+    try:
+        return geocode['formatted_address']
+    except:
+        print("Formatted address N/A")
+        return ''
+
 def get_traffic_data(bbox):
     """retrieves traffic incident data in a given bounding box from MapQuest Traffic API"""
 
     # key = ""
     mapquest_key = cred.mapquest_api_key
-    google_key = cred.google_api_key
+    # google_key = cred.google_api_key
     response = requests.get(f"https://www.mapquestapi.com/traffic/v2/incidents?key={mapquest_key}&boundingBox={bbox}&filters=congestion,incidents,construction,event")
     data = pd.DataFrame(response.json()["incidents"])
     if len(data) > 0:
         data = data[['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime']]
-        addresses = []
-        for _, row in data.iterrows():
-            coord = str(row['lat']) +","+ str(row['lng'])
-            try:
-                response = requests.get(f"https://maps.googleapis.com/maps/api/geocode/json?latlng={coord}&key={google_key}")
-                addr = response.json()['results'][0]['formatted_address']
-            except:
-                addr = ""
-            addresses.append(addr)
-        data['address'] = addresses
+        # addresses = []
+        # for _, row in data.iterrows():
+        #     coord = str(row['lat']) +","+ str(row['lng'])
+        #     try:
+        #         response = requests.get(f"https://maps.googleapis.com/maps/api/geocode/json?latlng={coord}&key={google_key}")
+        #         addr = response.json()['results'][0]['formatted_address']
+        #     except:
+        #         addr = ""
+        #     addresses.append(addr)
+        geocodes = []
+        asyncio.run(get_batch_addresses(data, geocodes))
+        print(len(geocodes), len(data))
+
+        data['geocode'] = geocodes
+        data['county'] = data['geocode'].apply(get_county)
+        data['address'] = data['geocode'].apply(get_formatted_address)
+        data=data.drop(columns=['geocode'])
     return data
 
 def store_traffic_data(conn, bbox):
@@ -210,19 +269,20 @@ def get_county_incidents(conn, county):
 
     cmd =\
     f"""
-    SELECT Min_Latitude, Max_Latitude, Min_Longitude, Max_Longitude FROM counties
-    WHERE County LIKE '{county.upper()}'
+    SELECT * FROM incidents
+    WHERE county LIKE '{county.upper() + " County"}'
     """
     # print(cmd)
-    cursor = conn.cursor()
-    cursor.execute(cmd)
-    # min_lat, max_lat, min_lng, max_lng = cursor.fetchone()
-    bbox = cursor.fetchone()
+    # cursor = conn.cursor()
+    # cursor.execute(cmd)
+    # # min_lat, max_lat, min_lng, max_lng = cursor.fetchone()
+    # bbox = cursor.fetchone()
 
-    return get_incidents_in_area(conn, bbox)
+    # return get_incidents_in_area(conn, bbox)
+    return pd.read_sql_query(cmd, conn)
 
 def update_county_incidents(conn, county):
-    """Updates the database with current incidents in a given CA county"""
+    """Updates the database with current incidents in a given CA county using its approximate bounding box"""
 
     cmd =\
     f"""
