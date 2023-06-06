@@ -142,6 +142,7 @@ def insert_data(conn, data):
     
     # Converts endTime info into a datetime object, added to new column of dataframe
     if len(data) <= 0:
+        print("No data to insert")
         return
     cursor = conn.cursor()
     data['endDatetime'] = data['endTime'].apply(lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%S"))
@@ -187,22 +188,11 @@ async def get_traffic_data_async(bbox, session):
         async with session.get(url=url) as response:
             response = await response.json()
             data = pd.DataFrame(response["incidents"])
-            if len(data) > 0:
-                data = data[['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime']]
-
-                # Calls Google API for reverse geocoding, contains (nearest) address info for given coordinates
-                geocodes = []
-                asyncio.run(get_batch_addresses(data, geocodes))
-                print(f"{len(data)} incidents processed in batch")
-
-                # Extracts and attaches county and address info from geocode data
-                data['geocode'] = geocodes
-                data['county'] = data['geocode'].apply(get_county)
-                data['address'] = data['geocode'].apply(get_formatted_address)
-                data=data.drop(columns=['geocode'])
+            print(f"{len(data)} incidents processed in batch")
             return data
     except Exception as e:
         print("Unable to get response (Mapquest), error due to {}".format(e.__class__))
+        print(f"Mapquest API Reponse: {response}")
 
 
 async def store_traffic_data_async(conn, bbox):
@@ -227,14 +217,14 @@ async def store_traffic_data_async(conn, bbox):
         "lng_start": bbox_range["lng_start"],
         "lng_end": bbox_range["lng_start"] + bbox_step
     }
-    page = 1
+    page = 0
 
     async with aiohttp.ClientSession() as session:
         tasks=[]
         while bbox["lat_start"] <= bbox_range["lat_end"]:
             bbox_string = f"{bbox['lat_start']},{bbox['lng_start']},{bbox['lat_end']},{bbox['lng_end']}"
             tasks.append(asyncio.ensure_future(get_traffic_data_async(bbox_string, session)))
-            print(f"Section {page} initiated.")
+            # print(f"Section {page} initiated.")
             page += 1
             #the longitude values of the bounding box are updated by adding the bbox_step 
             #value to both the starting and ending longitudes
@@ -247,9 +237,23 @@ async def store_traffic_data_async(conn, bbox):
                 bbox["lat_end"] += bbox_step
                 bbox["lng_start"] = bbox_range["lng_start"]
                 bbox["lng_end"] = bbox_range["lng_start"] + bbox_step
+        print(f"{page} Mapquest API calls made.")
         dfs = await asyncio.gather(*tasks)
         data = pd.concat(dfs)
-        insert_data(conn, data)
+        data = data.drop_duplicates(subset=['id'])
+        if len(data) > 0:
+            data = data[['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime']]
+
+            # Calls Google API for reverse geocoding, contains (nearest) address info for given coordinates
+            geocodes = []
+            asyncio.run(get_batch_addresses(data, geocodes))
+
+            # Extracts and attaches county and address info from geocode data
+            data['geocode'] = geocodes
+            data['county'] = data['geocode'].apply(get_county)
+            data['address'] = data['geocode'].apply(get_formatted_address)
+            data=data.drop(columns=['geocode'])
+            insert_data(conn, data)
 
 
 async def get_address(url, session):
@@ -261,6 +265,7 @@ async def get_address(url, session):
             # print(resp)
             return resp['results'][0]
     except Exception as e:
+        print(resp)
         print("Unable to get response, error due to {}".format(e.__class__))
 
 async def get_batch_addresses(df, addresses):
@@ -279,10 +284,10 @@ async def get_batch_addresses(df, addresses):
 def get_county(geocode):
     """Extracts the county from geocoded info, if it exists"""
 
-    info = geocode['address_components']
-    # Administrative area level 2 is, by Google's definition, the county
-    county_dict = next((item for item in info if 'administrative_area_level_2' in item['types']), None)
     try:
+        info = geocode['address_components']
+        # Administrative area level 2 is, by Google's definition, the county
+        county_dict = next((item for item in info if 'administrative_area_level_2' in item['types']), None)
         return county_dict['long_name']
     except:
         print("County N/A")
@@ -436,8 +441,8 @@ def incident_scattermap(incidents, **kwargs):
                             lat="lat",
                             lon="lng",
                             color="severity",
-                            hover_name="id",
-                            hover_data=['shortDesc', 'type'],
+                            hover_name="shortDesc",
+                            hover_data=['id', 'type', 'endDatetime'],
                             mapbox_style="open-street-map",
                             **kwargs)
     
@@ -463,8 +468,8 @@ def incident_heatmap(incidents, **kwargs):
     fig = px.density_mapbox(incidents,
                             lat="lat",
                             lon="lng",
-                            hover_name="id",
-                            hover_data=['shortDesc', 'type'],
+                            hover_name="shortDesc",
+                            hover_data=['id', 'type', 'endDatetime'],
                             mapbox_style="open-street-map",
                             **kwargs)
     
