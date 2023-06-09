@@ -16,7 +16,7 @@ def insert_data(conn, data):
     """Inserts new traffic data into incidents table in database"""
 
     if len(data) > 0:
-        data.to_sql("incidents", conn, if_exists="append", index=False)
+        data.to_sql("incidents", conn, if_exists="replace", index=False)
 
 def get_traffic_data(bbox):
     """retrieves traffic incident data in a given bounding box from MapQuest Traffic API"""
