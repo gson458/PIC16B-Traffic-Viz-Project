@@ -1,0 +1,15 @@
+name: trafficviz
+channels:
+  - conda-forge
+  - pytorch
+  - menpo
+  - defaults
+dependencies:
+  - python
+  - dash
+  - dash-bootstrap-components
+  - pandas
+  - requests
+  - aiohttp
+  - geopandas
+prefix: C:\Users\gansi\anaconda3\envs\trafficviz

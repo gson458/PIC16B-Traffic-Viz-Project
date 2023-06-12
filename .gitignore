@@ -1,4 +1,4 @@
-credentials.py
+
 __pycache__/credentials.cpython-311.pyc
 traffic_data.db
 mid_report_test.db
@@ -7,3 +7,7 @@ test2.db
 test3.db
 test4.db
 webapptdb2.db
+webapptdb.db
+__pycache__/credentials.cpython-39.pyc
+__pycache__/traffic_data.cpython-39.pyc
+webapptdb3.db

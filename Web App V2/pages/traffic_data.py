@@ -23,39 +23,38 @@ import geopandas as gpd
 nest_asyncio.apply()
 
 
-#create our own database
-# conn = sqlite3.connect('traffic_data.db')
-
-
 # Gets county boundary line information for use in figure
-src = [
-    {
-        "name": "counties",
-        "suffix": ".shp",
-        "url": "https://www2.census.gov/geo/tiger/GENZ2018/shp/cb_2018_us_county_5m.zip",
-    },
-]
-data = {}
-for s in src:
-    f = Path.cwd().joinpath(urllib.parse.urlparse(s["url"]).path.split("/")[-1])
-    if not f.exists():
-        r = requests.get(s["url"],stream=True,)
-        with open(f, "wb") as fd:
-            for chunk in r.iter_content(chunk_size=128): fd.write(chunk)
+try:
+    cagdf = pd.read_pickle('webapp_county_data/cagdf.pkl')
+except:
+    print("Retrieving county boundary data, may take a minute...")
+    src = [
+        {
+            "name": "counties",
+            "suffix": ".shp",
+            "url": "https://www2.census.gov/geo/tiger/GENZ2018/shp/cb_2018_us_county_5m.zip",
+        },
+    ]
+    data = {}
+    for s in src:
+        f = Path.cwd().joinpath(urllib.parse.urlparse(s["url"]).path.split("/")[-1])
+        if not f.exists():
+            r = requests.get(s["url"],stream=True,)
+            with open(f, "wb") as fd:
+                for chunk in r.iter_content(chunk_size=128): fd.write(chunk)
 
-    fz = ZipFile(f)
-    fz.extractall(f.parent.joinpath(f.stem))
+        fz = ZipFile(f)
+        fz.extractall(f.parent.joinpath(f.stem))
 
-    data[s["name"]] = gpd.read_file(
-        f.parent.joinpath(f.stem).joinpath([f.filename
-                                            for f in fz.infolist()
-                                            if Path(f.filename).suffix == s["suffix"]][0])
-    ).assign(source_name=s["name"])
-gdf = pd.concat(data.values()).to_crs("EPSG:4326")
-cagdf = gdf[gdf['STATEFP']=='06']
-
-
-
+        data[s["name"]] = gpd.read_file(
+            f.parent.joinpath(f.stem).joinpath([f.filename
+                                                for f in fz.infolist()
+                                                if Path(f.filename).suffix == s["suffix"]][0])
+        ).assign(source_name=s["name"])
+    gdf = pd.concat(data.values()).to_crs("EPSG:4326")
+    cagdf = gdf[gdf['STATEFP']=='06']
+    cagdf.to_pickle('webapp_county_data/cagdf.pkl')
+    print("County boundary data retrieved.")
 
 
 def extract_coordinates(geo_shape):
@@ -75,8 +74,52 @@ def extract_coordinates(geo_shape):
     longitudes = [coord[0] for coord in coordinates]
     return latitudes, longitudes
 
+# Retrieves county bounding boxes if it does not already exist
+try:
+    county_bounds = pd.read_pickle('webapp_county_data/county_bounds.pkl')
+except:
+    print("Retrieving county bounding boxes, may take a minute...")
+    url = "https://public.opendatasoft.com/explore/dataset/us-county-boundaries/download/?format=csv&refine.statefp=06&location=2,40.61349,40.02538&timezone=America/Los_Angeles&lang=en&use_labels_for_header=true&csv_separator=%3B"
+
+    df = pd.read_csv(url, sep=";")
+    new_df = df[["NAME", "Geo Shape"]].copy()
+
+    # Create a list to store county bounds dataframes
+    county_bounds_list = []
+
+    # Iterate over each county
+    for _, row in new_df.iterrows():
+        county_name = row['NAME']
+        latitudes, longitudes = extract_coordinates(row['Geo Shape'])
+
+        # Calculate the minimum and maximum latitude and longitude for the county
+        min_latitude = min(latitudes)
+        max_latitude = max(latitudes)
+        min_longitude = min(longitudes)
+        max_longitude = max(longitudes)
+
+        # Create a dataframe for the county bounds
+        county_bounds_df = pd.DataFrame({'County': county_name,
+                                        'Min_Latitude': min_latitude,
+                                        'Max_Latitude': max_latitude,
+                                        'Min_Longitude': min_longitude,
+                                        'Max_Longitude': max_longitude}, index=[0])
+
+        # Append the county bounds dataframe to the list
+        county_bounds_list.append(county_bounds_df)
+
+    # Concatenate all county bounds dataframes into a single dataframe
+    county_bounds = pd.concat(county_bounds_list, ignore_index=True)
+
+    # Sort the DataFrame by county name
+    county_bounds = county_bounds.sort_values('County')
+    county_bounds.to_pickle('webapp_county_data/county_bounds.pkl')
+    print("County information retrieved.")
+
+
 def initialize_db(conn):
-    """Creates a counties table in the database if one does not already exist"""
+    """Creates a counties and incidents table in the database if one does not already exist"""
+
     cmd =\
     """
     SELECT name FROM sqlite_master WHERE name='counties'
@@ -84,45 +127,19 @@ def initialize_db(conn):
     cursor = conn.cursor()
     cursor.execute(cmd)
     if len(cursor.fetchall()) < 1:
-        url = "https://public.opendatasoft.com/explore/dataset/us-county-boundaries/download/?format=csv&refine.statefp=06&location=2,40.61349,40.02538&timezone=America/Los_Angeles&lang=en&use_labels_for_header=true&csv_separator=%3B"
-
-        df = pd.read_csv(url, sep=";")
-        new_df = df[["NAME", "Geo Shape"]].copy()
-
-        # Create a list to store county bounds dataframes
-        county_bounds_list = []
-
-        # Iterate over each county
-        for _, row in new_df.iterrows():
-            county_name = row['NAME']
-            latitudes, longitudes = extract_coordinates(row['Geo Shape'])
-
-            # Calculate the minimum and maximum latitude and longitude for the county
-            min_latitude = min(latitudes)
-            max_latitude = max(latitudes)
-            min_longitude = min(longitudes)
-            max_longitude = max(longitudes)
-
-            # Create a dataframe for the county bounds
-            county_bounds_df = pd.DataFrame({'County': county_name,
-                                            'Min_Latitude': min_latitude,
-                                            'Max_Latitude': max_latitude,
-                                            'Min_Longitude': min_longitude,
-                                            'Max_Longitude': max_longitude}, index=[0])
-
-            # Append the county bounds dataframe to the list
-            county_bounds_list.append(county_bounds_df)
-
-        # Concatenate all county bounds dataframes into a single dataframe
-        county_bounds = pd.concat(county_bounds_list, ignore_index=True)
-
-        # Sort the DataFrame by county name
-        county_bounds = county_bounds.sort_values('County')
-
         county_bounds.to_sql("counties", conn, if_exists="replace", index=False)
+    cmd =\
+    """
+    SELECT name FROM sqlite_master WHERE name='incidents'
+    """
+    cursor = conn.cursor()
+    cursor.execute(cmd)
+    if len(cursor.fetchall()) < 1:
+        df = pd.DataFrame(columns=['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime', 'county', 'address', 'endDatetime'])
+        df.to_sql("incidents", conn, if_exists="append", index=False)
 
 def update(conn):
-    """Updates incidents table by removing incidents with end times five hours before current time"""
+    """(OBSOLETE) Updates incidents table by removing incidents with end times five hours before current time"""
     # Works, but do not use; removing old incidents is unnecessary
 
     try:
@@ -145,9 +162,11 @@ def insert_data(conn, data):
     if len(data) <= 0:
         print("No data to insert")
         return
+    numeric_cols = ['id', 'severity', 'lat', 'lng']
+    for col in numeric_cols:
+        data[col] = pd.to_numeric(data[col])
     cursor = conn.cursor()
     data['endDatetime'] = data['endTime'].apply(lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%S"))
-
     try:
         # Data is temporarily stored in an intermediate table
         data.to_sql("intermediate", conn, if_exists='replace', index=False)
@@ -173,11 +192,12 @@ def insert_data(conn, data):
         cursor = conn.cursor()
         cmd = "DROP TABLE intermediate"
         cursor.execute(cmd)
+        conn.commit()
     except:
         # Triggers usually when incident table does not already exist
         print('Except triggered')
         data.to_sql("incidents", conn, if_exists="append", index=False)
-
+        conn.commit()
 
 
 async def get_traffic_data_async(bbox, session):
@@ -253,9 +273,10 @@ async def store_traffic_data_async(conn, bbox):
             data['geocode'] = geocodes
             data['county'] = data['geocode'].apply(get_county)
             data['address'] = data['geocode'].apply(get_formatted_address)
+            data['type'] = data['type'].apply(get_incident_type)
             data=data.drop(columns=['geocode'])
             insert_data(conn, data)
-
+            
 
 async def get_address(url, session):
     """Async call that gets the reverse geocode info of a coordinate pair"""
@@ -281,6 +302,12 @@ async def get_batch_addresses(df, addresses):
         addys = await asyncio.gather(*tasks)
         for addr in addys:
             addresses.append(addr)
+
+def get_incident_type(type):
+    """Changes integer incident type into string description (based on Mapquest API's syntax: 1, 2, 3, 4 are as shown below)"""
+
+    typeList=['','Construction','Event','Congestion','Incident']
+    return typeList[type]
 
 def get_county(geocode):
     """Extracts the county from geocoded info, if it exists"""
@@ -386,7 +413,11 @@ def get_county_incidents(conn, county):
     SELECT * FROM incidents
     WHERE county LIKE '{county.upper() + " County"}'
     """
-    return pd.read_sql_query(cmd, conn)
+    data = pd.read_sql_query(cmd, conn)
+    numeric_cols = ['id', 'severity', 'lat', 'lng']
+    for col in numeric_cols:
+        data[col] = pd.to_numeric(data[col])
+    return data
 
 def update_county_incidents_synchronous(conn, county):
     """(OBSOLETE: see async version) Updates the database with current incidents in a given CA county using its approximate bounding box"""
@@ -443,7 +474,7 @@ def incident_scattermap(incidents, **kwargs):
                             lon="lng",
                             color="severity",
                             hover_name="shortDesc",
-                            hover_data=['id', 'type', 'endDatetime'],
+                            hover_data=['id', 'type', 'address', 'endDatetime'],
                             mapbox_style="open-street-map",
                             **kwargs)
     
@@ -470,7 +501,7 @@ def incident_heatmap(incidents, **kwargs):
                             lat="lat",
                             lon="lng",
                             hover_name="shortDesc",
-                            hover_data=['id', 'type', 'endDatetime'],
+                            hover_data=['id', 'type', 'address', 'endDatetime'],
                             mapbox_style="open-street-map",
                             **kwargs)
     
