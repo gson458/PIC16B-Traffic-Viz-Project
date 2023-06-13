@@ -4,6 +4,10 @@ from dash import Dash, dcc, html
 import dash_bootstrap_components as dbc
 
 
+# This file manages the separate pages of the web app.
+# Run the web app from here. (Run in terminal or IDE)
+
+
 app = Dash(__name__,external_stylesheets=[dbc.themes.COSMO], use_pages=True)
 
 # Declare server for Heroku deployment. Needed for Procfile.

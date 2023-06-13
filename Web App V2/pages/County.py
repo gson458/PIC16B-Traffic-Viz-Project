@@ -15,6 +15,10 @@ from pages.traffic_data import get_county_incidents
 from pages.traffic_data import incident_scattermap
 from pages.traffic_data import incident_heatmap
 
+
+# This file manages the county page of the web app.
+
+
 # Sets this as the homepage
 dash.register_page(__name__, path='/')
 
@@ -43,6 +47,7 @@ layout =  dbc.Container([
     
     dbc.Row([
         dbc.Col(
+            # County text box input located in the upper right of the page
             dcc.Input(
                 id="county",
                 type="text",
@@ -54,15 +59,20 @@ layout =  dbc.Container([
             justify="end"
             ),
     
+    # Red message in the top left of the page that describes how many incidents are located in the inputted county
     html.Div(id='county_output_container', children=[],className="text-danger"),
+    # Red message in the top left of the page that displays the last time the database was updated (if in the same session)
     html.Div(id='refresh_message', children=[],className="text-danger"),
+    # Button in the top left that triggers the second callback updating the database in the selected county
     html.Button('Update county incidents', id='refresh_button', n_clicks=0),
     
     dbc.Row([
+        # The plotly figure that displays all relevant incidents on a map
         dbc.Col(dcc.Graph(id="my_county", className="border mt-3 shadow", figure = blank_figure())),
     ]),
     
     dbc.Row([
+        # Dropdown menu below the map that allows you to select between scatter_mapbox and scatter_heatmap modes
         dbc.Label('Map Type:'),
         dbc.Col(dcc.Dropdown(
             id="map_type",
@@ -73,6 +83,7 @@ layout =  dbc.Container([
     ],),
 
     dbc.Row([
+        # Table that displays all incidents in the county inputted
         dbc.Label('Incidents:'),
         dbc.Col(dash_table.DataTable(id='table', data=[], page_size=20)),
     ],)
@@ -98,10 +109,9 @@ def update_graph(county, map_type, update_callback_trigger):
     conn = sqlite3.connect('webapptdb.db')   
     try:
         # Retrieves incidents of input county
-
         initialize_db(conn)
         incidents = get_county_incidents(conn, county)
-        
+        # Selects correct map type
         if map_type=='scatter_mapbox':
             fig = incident_scattermap(incidents, zoom=8, color_continuous_scale='bluered')
         else:
@@ -113,6 +123,7 @@ def update_graph(county, map_type, update_callback_trigger):
 
     conn.close()
 
+    # Converts incidents dataframe into a dictionary for display in the web app datatable
     try:
         incidents = incidents.drop(columns=['id', 'lat', 'lng', 'startTime', 'endTime', 'county'])
         tableInfo = incidents.to_dict('records')
@@ -143,6 +154,7 @@ def update_incidents(n_clicks, county):
     update_county_incidents(conn, county)
     conn.close()
 
+    # Gets the current time for display in the relevant message
     time = str(datetime.now())
     return [f"Database last updated on {time} at {county.upper()} county"]
     

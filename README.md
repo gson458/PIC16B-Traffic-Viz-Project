@@ -1,6 +1,9 @@
 WARNING: API keys have been provided in this repo in the credentials.py files. These may not work in the future; if so just create you own Mapquest and Google keys and replace the variables accordingly.
 
 
+The finalized code is all contained within the 'Web App V2' folder. Other files related to data storage are in the 'webapp_county_data' or the base folder.
+
+
 To start using the traffic visualization, you need the following packages:
     dash
     dash_bootstrap_components
@@ -38,5 +41,9 @@ To update the database and figure with any incidents up to the current time, jus
 If you want to switch between map modes (scatter mapbox and heatmap), click one of the two options in the dropdown menu under 'Map Type'.
 
 Below the line saying 'Incidents' should be a table of all incidents displayed on the map. Click on the arrows at the bottom right to scroll through the pages of the table.
+
+
+ANOTHER NOTE: Severity is a measure of how much an incident affects traffic; 1 is mild, 2 is a notable slowdown, 3 is usually a full road closure
+
 
 There you go! Now you can see all the real-time traffic incidents in California!

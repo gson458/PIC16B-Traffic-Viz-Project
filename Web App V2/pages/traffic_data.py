@@ -9,14 +9,22 @@ import asyncio
 import aiohttp
 from plotly import express as px
 from datetime import datetime, timedelta
-from pages.credentials import google_api_key
-from pages.credentials import mapquest_api_key
 import nest_asyncio
-
 import urllib
 from pathlib import Path
 from zipfile import ZipFile
 import geopandas as gpd
+
+# Note that importing this file outside of the webapp will not work because of these two lines below:
+from pages.credentials import google_api_key
+from pages.credentials import mapquest_api_key
+# To be able to import this in a normal file, remove the 'pages.' prefix from credentials.
+
+
+# This file holds all the functions for interacting with the Mapquest and Google APIs as well as the database to store incident information
+# When this file is called, county border and bounding box information are retrieved from the webapp_county_data folder, or downloaded and
+# stored in that folder.
+
 
 # Allows async api calls when called from a jupyter notebook
 # See problems with existing async loops if error returns
@@ -120,6 +128,7 @@ except:
 def initialize_db(conn):
     """Creates a counties and incidents table in the database if one does not already exist"""
 
+    # Checks if a 'counties' table exists, and creates one if it doesn't
     cmd =\
     """
     SELECT name FROM sqlite_master WHERE name='counties'
@@ -128,6 +137,8 @@ def initialize_db(conn):
     cursor.execute(cmd)
     if len(cursor.fetchall()) < 1:
         county_bounds.to_sql("counties", conn, if_exists="replace", index=False)
+
+    # Checks if an 'incidents' table exists, and creates one if it doesn't
     cmd =\
     """
     SELECT name FROM sqlite_master WHERE name='incidents'
@@ -138,34 +149,25 @@ def initialize_db(conn):
         df = pd.DataFrame(columns=['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime', 'county', 'address', 'endDatetime'])
         df.to_sql("incidents", conn, if_exists="append", index=False)
 
-def update(conn):
-    """(OBSOLETE) Updates incidents table by removing incidents with end times five hours before current time"""
-    # Works, but do not use; removing old incidents is unnecessary
-
-    try:
-        cutoffTime = datetime.now() - timedelta(hours=5)
-        cursor = conn.cursor()
-        cmd=\
-        f"""
-        DELETE FROM incidents
-        WHERE endDatetime < '{cutoffTime.strftime('%Y-%m-%d %H:%M:%S')}'
-        """
-        cursor.execute(cmd)
-    except:
-        print("Error, likely table does not exist")
 
 
 def insert_data(conn, data):
     """Inserts new traffic data into incidents table in database"""
     
-    # Converts endTime info into a datetime object, added to new column of dataframe
+    # Stops insertion if there is no data to insert
     if len(data) <= 0:
         print("No data to insert")
         return
+    
+    # Ensures that numeric information are not converted into a string (doesn't appear to work? fixed by applying to data after retrieval)
+    # See get_county_incidents
     numeric_cols = ['id', 'severity', 'lat', 'lng']
     for col in numeric_cols:
         data[col] = pd.to_numeric(data[col])
+
     cursor = conn.cursor()
+
+    # Converts endTime info into a datetime object, added to new column of dataframe
     data['endDatetime'] = data['endTime'].apply(lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%S"))
     try:
         # Data is temporarily stored in an intermediate table
@@ -192,9 +194,10 @@ def insert_data(conn, data):
         cursor = conn.cursor()
         cmd = "DROP TABLE intermediate"
         cursor.execute(cmd)
+
         conn.commit()
     except:
-        # Triggers usually when incident table does not already exist
+        # Triggers usually when incident table does not already exist; should not happen if database properly initialized
         print('Except triggered')
         data.to_sql("incidents", conn, if_exists="append", index=False)
         conn.commit()
@@ -240,12 +243,16 @@ async def store_traffic_data_async(conn, bbox):
     }
     page = 0
 
+    # Iterates over all 1 degree by 1 degree bounding boxes covering the inputted bounding box and calls the Mapquest API for each box.
+    # Each API call is run simultaneously
     async with aiohttp.ClientSession() as session:
         tasks=[]
         while bbox["lat_start"] <= bbox_range["lat_end"]:
+            # bounding box input is converted into a string for the API call
             bbox_string = f"{bbox['lat_start']},{bbox['lng_start']},{bbox['lat_end']},{bbox['lng_end']}"
+            # Individual API call is made in the get_traffic_data_async method
             tasks.append(asyncio.ensure_future(get_traffic_data_async(bbox_string, session)))
-            # print(f"Section {page} initiated.")
+
             page += 1
             #the longitude values of the bounding box are updated by adding the bbox_step 
             #value to both the starting and ending longitudes
@@ -259,10 +266,13 @@ async def store_traffic_data_async(conn, bbox):
                 bbox["lng_start"] = bbox_range["lng_start"]
                 bbox["lng_end"] = bbox_range["lng_start"] + bbox_step
         print(f"{page} Mapquest API calls made.")
+
+        # Dataframes from the separate API calls are gathered and concatenated together
         dfs = await asyncio.gather(*tasks)
         data = pd.concat(dfs)
         data = data.drop_duplicates(subset=['id'])
         if len(data) > 0:
+            # Keeps only the relevant columns
             data = data[['id', 'type', 'severity', 'shortDesc', 'lat', 'lng', 'startTime', 'endTime']]
 
             # Calls Google API for reverse geocoding, contains (nearest) address info for given coordinates
@@ -284,7 +294,6 @@ async def get_address(url, session):
     try:
         async with session.get(url=url) as response:
             resp = await response.json()
-            # print(resp)
             return resp['results'][0]
     except Exception as e:
         print(resp)
@@ -314,10 +323,11 @@ def get_county(geocode):
 
     try:
         info = geocode['address_components']
-        # Administrative area level 2 is, by Google's definition, the county
+        # Administrative area level 2 is, by Google's definition, the county; the long name is extracted if it exists
         county_dict = next((item for item in info if 'administrative_area_level_2' in item['types']), None)
         return county_dict['long_name']
     except:
+        # Triggers if geocode does not contain a section labeled 'administrative_area_level_2', possible if incident far from normal roads
         print("County N/A")
         return ''
 
@@ -329,6 +339,131 @@ def get_formatted_address(geocode):
     except:
         print("Formatted address N/A")
         return ''
+
+
+
+def get_counties(conn):
+    """Returns a list of all counties in California"""
+
+    cmd =\
+    """
+    SELECT county FROM counties
+    """
+    cursor = conn.cursor()
+    cursor.execute(cmd)
+    return [i[0] for i in cursor.fetchall()]
+
+def get_county_incidents(conn, county):
+    """Returns a dataframe of all traffic incidents in given county in California"""
+
+    cmd =\
+    f"""
+    SELECT * FROM incidents
+    WHERE county LIKE '{county.upper() + " County"}'
+    """
+    data = pd.read_sql_query(cmd, conn)
+
+    # Ensures that all numeric data are kept numeric and not as strings
+    numeric_cols = ['id', 'severity', 'lat', 'lng']
+    for col in numeric_cols:
+        data[col] = pd.to_numeric(data[col])
+        
+    return data
+
+
+def update_county_incidents(conn, county):
+    """Updates the database with current incidents in a given CA county using its approximate bounding box"""
+
+    # Retrieves county bounding box
+    cmd =\
+    f"""
+    SELECT Min_Latitude, Max_Latitude, Min_Longitude, Max_Longitude FROM counties
+    WHERE County LIKE '{county.upper()}'
+    """
+    cursor = conn.cursor()
+    cursor.execute(cmd)
+    bbox = cursor.fetchone()
+
+    # Runs update function
+    asyncio.run(store_traffic_data_async(conn, bbox))   
+
+
+def incident_scattermap(incidents, **kwargs):
+    """Creates a plotly scattermap of traffic incidents"""
+
+    fig = px.scatter_mapbox(incidents,
+                            lat="lat",
+                            lon="lng",
+                            color="severity",
+                            hover_name="shortDesc",
+                            hover_data=['id', 'type', 'address', 'endDatetime'],
+                            mapbox_style="open-street-map",
+                            **kwargs)
+    
+    # Adjusts margin and adds layer for county boundaries
+    fig.update_layout(
+        margin={"r":0, "l":0,"b":0,"t":0},
+        mapbox_layers=[
+            {
+                "source": json.loads(cagdf.geometry.to_json()),
+                "below": "traces",
+                "type": "line",
+                "color": "black",
+                "line": {"width": 1},
+            },
+        ],
+        mapbox_style="open-street-map",
+    )
+    return fig
+
+def incident_heatmap(incidents, **kwargs):
+    """Creates a plotly heatmap of traffic incidents"""
+
+    fig = px.density_mapbox(incidents,
+                            lat="lat",
+                            lon="lng",
+                            hover_name="shortDesc",
+                            hover_data=['id', 'type', 'address', 'endDatetime'],
+                            mapbox_style="open-street-map",
+                            **kwargs)
+    
+    # Adjusts margin and adds layer for county boundaries
+    fig.update_layout(
+        margin={"r":0, "l":0,"b":0,"t":0},
+        mapbox_layers=[
+            {
+                "source": json.loads(cagdf.geometry.to_json()),
+                "below": "traces",
+                "type": "line",
+                "color": "black",
+                "line": {"width": 1},
+            },
+        ],
+        mapbox_style="open-street-map",
+    )
+    return fig
+
+
+
+# ALL FUNCTIONS BELOW ARE UNUSED IN THIS ITERATION OR OBSOLETE
+
+
+def update(conn):
+    """(OBSOLETE) Updates incidents table by removing incidents with end times five hours before current time"""
+    # Works, but do not use; removing old incidents is unnecessary
+
+    try:
+        cutoffTime = datetime.now() - timedelta(hours=5)
+        cursor = conn.cursor()
+        cmd=\
+        f"""
+        DELETE FROM incidents
+        WHERE endDatetime < '{cutoffTime.strftime('%Y-%m-%d %H:%M:%S')}'
+        """
+        cursor.execute(cmd)
+    except:
+        print("Error, likely table does not exist")
+
 
 def get_traffic_data(bbox):
     """(OBSOLETE: see async version) retrieves traffic incident data in a given bounding box from MapQuest Traffic API"""
@@ -394,30 +529,6 @@ def store_traffic_data(conn, bbox):
             bbox["lng_end"] = bbox_range["lng_start"] + bbox_step
         time.sleep(1)  # Sleep for 1 second to avoid hitting API rate limits
 
-def get_counties(conn):
-    """Returns a list of all counties in California"""
-
-    cmd =\
-    """
-    SELECT county FROM counties
-    """
-    cursor = conn.cursor()
-    cursor.execute(cmd)
-    return [i[0] for i in cursor.fetchall()]
-
-def get_county_incidents(conn, county):
-    """Returns a dataframe of all traffic incidents in given county in California"""
-
-    cmd =\
-    f"""
-    SELECT * FROM incidents
-    WHERE county LIKE '{county.upper() + " County"}'
-    """
-    data = pd.read_sql_query(cmd, conn)
-    numeric_cols = ['id', 'severity', 'lat', 'lng']
-    for col in numeric_cols:
-        data[col] = pd.to_numeric(data[col])
-    return data
 
 def update_county_incidents_synchronous(conn, county):
     """(OBSOLETE: see async version) Updates the database with current incidents in a given CA county using its approximate bounding box"""
@@ -435,25 +546,10 @@ def update_county_incidents_synchronous(conn, county):
     bbox = cursor.fetchone()
     store_traffic_data(conn, bbox)
 
-def update_county_incidents(conn, county):
-    """Updates the database with current incidents in a given CA county using its approximate bounding box"""
-
-    # Retrieves county bounding box
-    cmd =\
-    f"""
-    SELECT Min_Latitude, Max_Latitude, Min_Longitude, Max_Longitude FROM counties
-    WHERE County LIKE '{county.upper()}'
-    """
-    cursor = conn.cursor()
-    cursor.execute(cmd)
-    bbox = cursor.fetchone()
-
-    # Runs update function
-    asyncio.run(store_traffic_data_async(conn, bbox))   
-
 def get_incidents_in_area(conn, bbox):
     """Retrieves incidents within the given bounding box from database"""
     
+    # This method is not used; retrievals are done through get_county_incidents instead
     min_lat, max_lat = bbox[0], bbox[1]
     min_lng, max_lng = bbox[2], bbox[3]
     cmd=\
@@ -465,58 +561,3 @@ def get_incidents_in_area(conn, bbox):
     print(cmd)
     df = pd.read_sql_query(cmd, conn)
     return df
-
-def incident_scattermap(incidents, **kwargs):
-    """Creates a plotly scattermap of traffic incidents"""
-
-    fig = px.scatter_mapbox(incidents,
-                            lat="lat",
-                            lon="lng",
-                            color="severity",
-                            hover_name="shortDesc",
-                            hover_data=['id', 'type', 'address', 'endDatetime'],
-                            mapbox_style="open-street-map",
-                            **kwargs)
-    
-    # Adjusts margin and adds layer for county boundaries
-    fig.update_layout(
-        margin={"r":0, "l":0,"b":0,"t":0},
-        mapbox_layers=[
-            {
-                "source": json.loads(cagdf.geometry.to_json()),
-                "below": "traces",
-                "type": "line",
-                "color": "black",
-                "line": {"width": 1},
-            },
-        ],
-        mapbox_style="open-street-map",
-    )
-    return fig
-
-def incident_heatmap(incidents, **kwargs):
-    """Creates a plotly heatmap of traffic incidents"""
-
-    fig = px.density_mapbox(incidents,
-                            lat="lat",
-                            lon="lng",
-                            hover_name="shortDesc",
-                            hover_data=['id', 'type', 'address', 'endDatetime'],
-                            mapbox_style="open-street-map",
-                            **kwargs)
-    
-    # Adjusts margin and adds layer for county boundaries
-    fig.update_layout(
-        margin={"r":0, "l":0,"b":0,"t":0},
-        mapbox_layers=[
-            {
-                "source": json.loads(cagdf.geometry.to_json()),
-                "below": "traces",
-                "type": "line",
-                "color": "black",
-                "line": {"width": 1},
-            },
-        ],
-        mapbox_style="open-street-map",
-    )
-    return fig
